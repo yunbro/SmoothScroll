@@ -1,0 +1,12 @@
+# SmoothScroll（Windows）依赖
+
+运行所需（源码方式启动）：
+
+    pip install -r requirements.txt
+
+- **pystray** —— 系统托盘图标与菜单
+- **Pillow** —— 托盘图标解码（程序内部把图标以 base64 PNG 内嵌，用 Pillow 还原成图像对象）
+
+> 除此之外**全部使用 Python 标准库**（`ctypes` 调 Win32、`tkinter` 做设置面板、`threading` 跑动画与钩子）。不需要 pywin32、不需要 C 编译器。
+
+打包成 exe 还需要 PyInstaller，见 `requirements-dev.txt` 与 `build.bat`。
