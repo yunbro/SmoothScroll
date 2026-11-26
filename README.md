@@ -3,43 +3,16 @@
 一个 Windows 版「平滑滚动 + 惯性动量」小工具，功能对标 SmoothScroll：把鼠标滚轮一格一格的跳跃，变成连续的滚动动画，并带一点滑行惯性。
 
 - `SmoothScroll.py` —— 源码（标准库实现核心，托盘用 pystray/Pillow）
-- `selftest_inject.py` —— 自检用的小工具，向系统注入滚轮事件
+- `dist\SmoothScroll.exe` —— 打包好的免安装单文件版（约 27 MB，无需 Python）
 - `assets\SmoothScroll.ico` —— 程序图标（深色圆角底 + 白色鼠标（绿色滚轮）+ S 形下落箭头，多尺寸 16~256）
 - `assets\icon_s_down.ico` / `icon_mouse_trail.ico` / `icon_mouse_s.ico` / `icon_wheel2.ico` —— 备选图标方案，想换就替换 `SmoothScroll.ico` 后重新打包
-- `build.bat` —— 一键打包成单文件 exe
-- `LICENSE` —— MIT 许可
-- `docs\ARCHITECTURE.md` —— **架构与二次开发说明**（数据流、公式、调参旋钮、改法、坑）
-
-## 目录结构
-
-```
-SmoothScroll/
-├─ SmoothScroll.py        # 全部程序逻辑（单文件，约 1500 行）
-├─ selftest_inject.py     # 自检用：向系统注入滚轮事件
-├─ requirements.txt       # 运行时依赖：pystray、Pillow
-├─ requirements-dev.txt   # 打包依赖：PyInstaller
-├─ build.bat              # Windows 一键打包
-├─ assets/                # 图标（多尺寸 ico）
-├─ docs/
-│  └─ ARCHITECTURE.md     # 架构与二次开发说明
-├─ LICENSE                # MIT
-├─ README.md
-└─ .gitignore
-```
-
-## 环境要求
-
-- Windows 10 1809 及以上（用到深色标题栏属性；Win11 更佳）
-- Python 3.9+（开发在 3.12 上验证）
-- 运行：`pip install -r requirements.txt`；打包：`pip install -r requirements-dev.txt`
-
-> 仓库里没有放 `dist/` 和 `build/`，`config.json`、`smoothscroll.log`、`trace.csv` 都是运行时在本机生成的，已在 `.gitignore` 里排除。打包好的 exe 建议走 Releases 而不是提交进仓库。
+- `selftest_inject.py` —— 自检用的小工具，向系统注入滚轮事件
 
 ---
 
 ## 怎么用
 
-**免安装版**：把 `dist\SmoothScroll.exe` 放到任意目录，双击运行，托盘出现图标即生效，无需管理员权限（想覆盖管理员窗口的话才需要提权）。
+**免安装版**：双击 `dist\SmoothScroll.exe`，托盘出现蓝色图标即生效，无需管理员权限。
 
 **源码版**：`pythonw SmoothScroll.py`（要后台常驻就用 `pythonw` 而不是 `python`，否则会挂一个黑窗口）。
 
@@ -50,12 +23,50 @@ SmoothScroll/
 | 平滑滚动 (开) | 勾选/取消，即时开关接管 |
 | 参数设置… | 打开带滑杆的设置面板，改完「保存并应用」立即生效 |
 | 重新加载配置 | 手动改过 config.json 后不用退出程序 |
-| 开机自启 | 勾选后写入 `HKCU\...\CurrentVersion\Run` |
+| 开机自启 | 勾选/取消。写入 `HKCU\...\CurrentVersion\Run`，菜单文字会显示当前状态（未开启 / 已开启 / 被系统禁用） |
+| 修复自启（复制到固定位置） | 把 exe 复制到 `%LOCALAPPDATA%\SmoothScroll` 并登记自启。程序本来在临时目录里、重启后找不到的话点这个 |
 | 打开配置文件夹 | 定位到 `%LOCALAPPDATA%\SmoothScroll` |
 | 退出 | 停止接管并退出 |
 
 配置文件：`%LOCALAPPDATA%\SmoothScroll\config.json`
 运行日志：`%LOCALAPPDATA%\SmoothScroll\smoothscroll.log`
+
+---
+
+## 开机自启没反应？按这个顺序查
+
+内置了诊断命令，跑一次就知道卡在哪：
+
+```bat
+SmoothScroll.exe --autostart status
+```
+
+结果会写到 `%LOCALAPPDATA%\SmoothScroll\autostart-status.txt`，四个字段的含义：
+
+| 字段 | 含义 |
+| --- | --- |
+| `on` | 注册表里到底有没有这条自启 |
+| `command` | 登记的命令是什么 |
+| `current` | 当前这个程序应该登记的命令 |
+| `matches` | 两者是否一致；`false` 说明 exe 被移动/改名过 |
+| `suppressed` | `true` = 被任务管理器的「启动」项禁用过 |
+| `unstable_path` | `true` = 程序在临时目录（Temp/下载/聊天缓存）里，重启可能已被清理 |
+
+四种常见原因与对策：
+
+1. **exe 被挪过位置**：`matches: false`。手动启动一次程序即可——启动时会自动把自启路径改成当前位置（日志里会有「自启路径已自愈」）。
+2. **任务管理器里被关掉了**：`suppressed: true`。打开托盘菜单再勾一次「开机自启」会顺手清掉禁用标记；也可以去「任务管理器 → 启动」里手动启用。
+3. **程序在临时目录**：`unstable_path: true`。点托盘菜单「修复自启（复制到固定位置）」，它会把 exe 复制到 `%LOCALAPPDATA%\SmoothScroll` 并登记指向副本的自启。
+4. **被安全软件拦了**：`on` 有值但开机后没有进程。把 `SmoothScroll.exe` 加进杀软的信任列表，或者用「修复自启」换个更"正规"的位置后再试。
+
+想手动开关也可以用命令：
+
+```bat
+SmoothScroll.exe --autostart on
+SmoothScroll.exe --autostart off
+```
+
+> 注：「开机自启」只在**当前用户**的 HKCU 里生效，不需要管理员权限；如果你以别的账户登录，需要在那个账户下再开一次。
 
 ---
 
@@ -127,27 +138,19 @@ python selftest_inject.py 3 0.06
 
 `target` / `pos` / `emitted` 三者应当基本相等 —— 相等说明「输入多少就还你多少」，没有漂移。
 
-重新打包（两种方式任选）：
-
-```bat
-:: 方式一：双击 build.bat，自动装依赖并打包
-build.bat
-```
+重新打包：
 
 ```powershell
-:: 方式二：手动
 python -m pip install pystray pillow pyinstaller
-python -m PyInstaller --noconfirm --clean --onefile --windowed --name SmoothScroll `
-  --icon assets\SmoothScroll.ico --distpath dist --workpath build --specpath build `
-  SmoothScroll.py
+python -m PyInstaller --noconfirm --onefile --windowed --name SmoothScroll `
+  --icon assets\SmoothScroll.ico SmoothScroll.py
 ```
-
-改公式、加参数、换图标、加横向滚动等具体做法，见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
 
 ---
 
 ## 变更记录
 
+- **v9** 开机自启加固：菜单文字显示真实状态（未开启/已开启/被系统禁用）、启动时自动把过期路径改成当前位置、开启时清掉任务管理器留下的禁用标记、写入后回读校验、exe 在临时目录时给气泡提醒，并新增「修复自启（复制到固定位置）」与 `--autostart status|on|off` 诊断命令。
 - **v8** 设置面板细节：滑杆改为自绘（已选区间整段填满强调色 + 白色圆形滑块，一眼看出当前值在哪），外观区加「跟随系统 / 深色 / 浅色」三档切换，点了立即换肤不用关窗口；主题选择存进 config.json 的 `theme` 字段。
 - **v7** 设置面板重做：不再用系统灰底，改为跟随 Windows「应用主题」自动切深/浅两套配色（深色下连标题栏一起染黑），滑杆数值用强调色右对齐、按钮扁平化带悬停反馈。同时修掉松手瞬间的速度反弹——滚动过程中速度上限锁在"你自己的滚轮速率"，实测 15 格急停松手后余量 1.24 格、速度全程只降不升。
 - **v6** 图标再定稿：把"鼠标 + 滚轮"和"S 形流动"合到一起——深色圆角底上一只白色鼠标（绿色滚轮作点睛），底部接一条 S 曲线落成粗箭头，一眼能看出"鼠标滚动"和"往下平滑"。同步更新 exe 内嵌图标、托盘图标、`assets\SmoothScroll.ico`。
@@ -162,11 +165,3 @@ python -m PyInstaller --noconfirm --clean --onefile --windowed --name SmoothScro
 ## 实现原理（一百字）
 
 用 `WH_MOUSE_LL` 低级鼠标钩子拦住全局滚轮消息并吞掉，把位移累积成「目标位置」；动画线程用临界阻尼二阶系统（弹簧-阻尼，阻尼比正好 1，不过冲）逐帧逼近目标，每帧把差值切成若干小段用 `SendInput` 注入回去。阻尼比 1 的响应本身就是「平滑 + 尾段自然减速」，把惯性调到 0 时它退化成一条纯缓动曲线；自己注入的事件带 `dwExtraInfo` 签名，钩子见到就放行，不会递归。
-
----
-
-## 许可
-
-MIT License，见 [LICENSE](LICENSE)。可以自由使用、修改、分发、商用，保留版权声明即可。
-
-本项目大量使用 Windows 未公开文档化的输入注入方式（`WH_MOUSE_LL` + `SendInput`），在部分程序（游戏、远程桌面、管理员窗口）中不生效，属已知限制，见上文「已知限制」。

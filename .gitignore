@@ -1,0 +1,17 @@
+# ---- Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ---- PyInstaller 产物
+build/
+dist/
+*.spec
+
+# ---- 运行时生成（用户本机配置与日志，别提交）
+config.json
+smoothscroll.log
+trace.csv
+*.log

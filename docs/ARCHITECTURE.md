@@ -213,6 +213,8 @@ open("SmoothScroll.py", "w", encoding="utf-8").write(src)
 | DWM 深色标题栏 | 白标题栏配黑窗口 | `_set_dark_titlebar()` 用属性号 20（`DWMWA_USE_IMMERSIVE_DARK_MODE`），Win10 1809+ 有效 |
 | tkinter 原生控件是系统灰 | 深色面板上刺眼 | 这就是为什么滑杆用 Canvas 自绘（`_flat_slider`），别退回 `tk.Scale` |
 | 打包路径 | `--icon` 相对路径失效 | `build.bat` 里先 `cd /d "%~dp0"`，PyInstaller 用相对路径才稳 |
+| Run 键写了但开机不启动 | 注册表里有值，登录后没进程 | 三种可能：① exe 被移动过，命令指向旧路径；② 用户在「任务管理器 → 启动」里禁用过，Explorer 在 `HKCU\...\Explorer\StartupApproved\Run` 写了首字节非 `0x02` 的二进制标记，它优先级高于 Run 键；③ 安全软件拦截。`_heal_autostart()` 负责 ①，`_clear_startup_approved()` 负责 ② |
+| 读 StartupApproved 报权限错 | 删除禁用标记没生效 | 该键既要读又要写，`OpenKey` 必须传 `KEY_READ \| KEY_SET_VALUE`；只传 `KEY_SET_VALUE` 会在 `QueryValueEx` 抛异常被 `except` 吞掉，表现为"清了但没清" |
 
 ---
 

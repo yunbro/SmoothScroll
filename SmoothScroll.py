@@ -984,17 +984,78 @@ def _launch_command() -> str:
     return '"%s" "%s"' % (pyw, os.path.abspath(__file__))
 
 
-def autostart_enabled() -> bool:
+def autostart_command() -> str:
+    """注册表里当前登记的自启命令（没登记就是空串）。"""
     import winreg
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as k:
             v, _ = winreg.QueryValueEx(k, RUN_VALUE)
-            return bool(v)
+            return str(v or "")
+    except OSError:
+        return ""
+
+
+def autostart_enabled() -> bool:
+    return bool(autostart_command())
+
+
+# Explorer 会在这里记"这条自启被用户在任务管理器里关掉了"。存在且带禁用位的条目
+# 会让 Run 键失效——所以在写入自启时顺手把它清掉，重新开启才算真的开。
+STARTUP_APPROVED = r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"
+
+
+def _clear_startup_approved(name: str = RUN_VALUE) -> None:
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_APPROVED, 0,
+                            winreg.KEY_READ | winreg.KEY_SET_VALUE) as k:
+            try:
+                winreg.QueryValueEx(k, name)
+            except FileNotFoundError:
+                return                      # 没有标记 = 本来就是启用状态
+            winreg.DeleteValue(k, name)
+            log("已清除任务管理器里的自启禁用标记")
+    except Exception:
+        pass                                # 键不存在/无权限都无所谓
+
+
+def _startup_suppressed(name: str = RUN_VALUE) -> bool:
+    """任务管理器「启动」里被关掉过：Run 值还在，但 Explorer 写了禁用标记。
+    该二进制值首字节 0x02 表示启用，其它（0x03/0x09…）表示禁用。"""
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_APPROVED) as k:
+            data, _ = winreg.QueryValueEx(k, name)
+            return bool(data) and data[0] != 0x02
     except OSError:
         return False
 
 
-def set_autostart(on: bool) -> None:
+# 这些目录随时会被清理，把 exe 放里面再开自启，重启后大概率找不到
+_UNSTABLE_DIRS = ("\\temp\\", "\\downloads\\", "\\clipboxtemp\\", "\\chats\\",
+                  "\\xiazaizhinlei\\", "\\desktop\\temp")
+
+
+def _path_looks_unstable(cmd: str) -> bool:
+    p = cmd.lower()
+    return any(h in p for h in _UNSTABLE_DIRS)
+
+
+def autostart_status() -> dict:
+    """给托盘菜单/诊断命令用：当前是否开启、登记的命令、是否被系统压制。"""
+    cmd = autostart_command()
+    return {
+        "on": bool(cmd),
+        "command": cmd,
+        "current": _launch_command(),
+        "matches": cmd == _launch_command(),
+        "suppressed": _startup_suppressed() if cmd else False,
+        "unstable_path": _path_looks_unstable(cmd) if cmd else False,
+    }
+
+
+def set_autostart(on: bool) -> bool:
+    """写入/删除自启项，写完回读校验；顺带清掉任务管理器的禁用标记。"""
     import winreg
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as k:
@@ -1005,9 +1066,35 @@ def set_autostart(on: bool) -> None:
                     winreg.DeleteValue(k, RUN_VALUE)
                 except FileNotFoundError:
                     pass
-        log("开机自启 -> %s" % on)
+        if on:
+            _clear_startup_approved()
+            ok = autostart_command() == _launch_command()
+            log("开机自启 -> True, 命令=%s, 校验=%s" % (_launch_command(), ok))
+            return ok
+        log("开机自启 -> False")
+        return autostart_command() == ""
     except Exception:
         log("开机自启设置失败: %s" % traceback.format_exc(limit=1))
+        return False
+
+
+def _heal_autostart() -> None:
+    """启动时自愈：开着自启但登记的路径不是当前程序（换过目录/改过名/从源码切到 exe），
+    就按当前位置重写一遍，避免"开机启动没反应"。"""
+    if not autostart_enabled():
+        return
+    cur = _launch_command()
+    old = autostart_command()
+    if old != cur:
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0,
+                                winreg.KEY_SET_VALUE) as k:
+                winreg.SetValueEx(k, RUN_VALUE, 0, winreg.REG_SZ, cur)
+            _clear_startup_approved()
+            log("自启路径已自愈: %s -> %s" % (old, cur))
+        except Exception:
+            log("自启路径自愈失败: %s" % traceback.format_exc(limit=1))
 
 
 def run_tray(cfg: dict, engine: Engine, activator: "Activator" = None):
@@ -1030,15 +1117,75 @@ def run_tray(cfg: dict, engine: Engine, activator: "Activator" = None):
     def open_settings(icon, item):
         settings.open()
 
+    def autostart_text(item):
+        st = autostart_status()
+        if not st["on"]:
+            return "开机自启（未开启）"
+        if st["suppressed"]:
+            return "开机自启（被系统禁用）"
+        if not st["matches"]:
+            return "开机自启（路径已变，将自动修正）"
+        return "开机自启（已开启）"
+
     def toggle_autostart(icon, item):
-        set_autostart(not autostart_enabled())
+        want = not autostart_enabled()
+        ok = set_autostart(want)
         icon.update_menu()
+        if not want:
+            return
+        if not ok:
+            try:
+                icon.notify("自启写入没成功，可能被安全软件拦了。日志在配置文件夹里。",
+                            "SmoothScroll")
+            except Exception:
+                pass
+        elif _path_looks_unstable(_launch_command()):
+            try:
+                icon.notify("已开启。不过程序现在在临时目录里，重启后可能找不到它；"
+                            "建议先把 exe 挪到固定文件夹（比如 D:\\Tools），再开一次自启。",
+                            "SmoothScroll")
+            except Exception:
+                pass
 
     def open_folder(icon, item):
         try:
             os.startfile(APP_DIR)
         except Exception:
             pass
+
+    def fix_autostart(icon, item):
+        """把 exe 复制到 %LOCALAPPDATA%\\SmoothScroll（不会被清理的位置）并登记自启。"""
+        if not getattr(sys, "frozen", False):
+            try:
+                icon.notify("当前是源码方式运行。建议先打包成 exe，再用这个功能。",
+                            "SmoothScroll")
+            except Exception:
+                pass
+            return
+        try:
+            import shutil
+            os.makedirs(APP_DIR, exist_ok=True)
+            dst = os.path.join(APP_DIR, "SmoothScroll.exe")
+            if os.path.abspath(dst) != os.path.abspath(sys.executable):
+                shutil.copy2(sys.executable, dst)
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0,
+                                winreg.KEY_SET_VALUE) as k:
+                winreg.SetValueEx(k, RUN_VALUE, 0, winreg.REG_SZ, '"%s"' % dst)
+            _clear_startup_approved()
+            icon.update_menu()
+            log("自启已修复：exe 固定到 %s" % dst)
+            try:
+                icon.notify("已复制到 %s 并登记开机自启。以后请用这个位置的程序。"
+                            % dst, "SmoothScroll")
+            except Exception:
+                pass
+        except Exception:
+            log("修复自启失败: %s" % traceback.format_exc(limit=1))
+            try:
+                icon.notify("修复失败，详见日志。", "SmoothScroll")
+            except Exception:
+                pass
 
     def quit_app(icon, item):
         engine.stop()
@@ -1049,7 +1196,8 @@ def run_tray(cfg: dict, engine: Engine, activator: "Activator" = None):
         Menu.SEPARATOR,
         Item("参数设置…", open_settings),
         Item("重新加载配置", reload_cfg),
-        Item("开机自启", toggle_autostart, checked=lambda i: autostart_enabled()),
+        Item(autostart_text, toggle_autostart, checked=lambda i: autostart_enabled()),
+        Item("修复自启（复制到固定位置）", fix_autostart),
         Item("打开配置文件夹", open_folder),
         Menu.SEPARATOR,
         Item("退出", quit_app),
@@ -1086,6 +1234,27 @@ def main():
         i = args.index("--test")
         test_seconds = float(args[i + 1]) if i + 1 < len(args) and args[i + 1].replace('.', '', 1).isdigit() else 8.0
 
+    # ---- 自启诊断：--autostart status | on | off（结果同时写到日志和 status 文件）
+    if "--autostart" in args:
+        i = args.index("--autostart")
+        sub = args[i + 1].lower() if i + 1 < len(args) else "status"
+        if sub in ("on", "enable", "1"):
+            set_autostart(True)
+        elif sub in ("off", "disable", "0"):
+            set_autostart(False)
+        st = autostart_status()
+        text = json.dumps(st, ensure_ascii=False, indent=2)
+        try:
+            os.makedirs(APP_DIR, exist_ok=True)
+            with open(os.path.join(APP_DIR, "autostart-status.txt"), "w",
+                      encoding="utf-8") as f:
+                f.write(text + "\n")
+        except Exception:
+            pass
+        log("自启诊断: %s" % text.replace("\n", " "))
+        print(text)
+        return
+
     if test_seconds:
         # 自检模式不参与单例（否则没法在运行中的实例旁边做验证）
         cfg = load_config()
@@ -1115,6 +1284,7 @@ def main():
         return
 
     cfg = load_config()
+    _heal_autostart()          # 开过自启但路径变了（换目录/改名/源码→exe）就自动修正
     engine = Engine(cfg)
     engine.start()
     time.sleep(0.4)   # 等钩子就绪
